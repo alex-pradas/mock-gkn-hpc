@@ -1,12 +1,15 @@
 import argparse
 import asyncio
+import json
 import os
+import re
 import shutil
 import tempfile
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastmcp import FastMCP
 from pydantic import FilePath
@@ -21,6 +24,10 @@ RUNS_DIR = DEFAULT_RUNS_DIR
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 JOB_TTL_SECONDS = 3600
 MOCK_RUN_SECONDS = 30
+META_FILENAME = "meta.json"
+START_TIME_RE = re.compile(r"^\d{8}$")  # MMDDhhmm
+
+Product = Literal["ansys", "meba", "mechs"]
 
 # (sleep_before_writing_seconds, line). Sleeps sum to MOCK_RUN_SECONDS.
 LOG_SCHEDULE: list[tuple[float, str]] = [
@@ -53,13 +60,43 @@ LOG_SCHEDULE: list[tuple[float, str]] = [
 ]
 
 
-def _render_results(job_id: str, dst: Path) -> None:
+def _write_meta(job_dir: Path, meta: dict) -> None:
+    (job_dir / META_FILENAME).write_text(json.dumps(meta, indent=2))
+
+
+def _read_meta(job_dir: Path) -> dict | None:
+    path = job_dir / META_FILENAME
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
+def _banner(meta: dict) -> list[str]:
+    priority = "high" if meta.get("high_prio") else "normal"
+    return [
+        f"qansys{meta['version']} starting; job={meta['job_name']}, "
+        f"np={meta['np']}, product={meta['product']}, priority={priority}",
+        f"Input:  {meta['input_file']}",
+        f"Output: {meta.get('output_file') or '<auto>'}",
+        f"Scheduled start: {meta.get('start_time') or 'now'}",
+        "",
+    ]
+
+
+def _render_results(job_id: str, job_dir: Path, dst: Path) -> None:
     tmpl = (TEMPLATES_DIR / "results.rst.tmpl").read_text()
+    meta = _read_meta(job_dir) or {}
     now = datetime.now()
     dst.write_text(tmpl.format(
         run_date=now.strftime("%Y-%m-%d"),
         run_time=now.strftime("%H:%M:%S"),
         job_id=job_id,
+        job_name=meta.get("job_name") or "-",
+        input_file=meta.get("input_file") or "-",
+        np=meta.get("np", "-"),
+        product=meta.get("product") or "-",
+        start_time=meta.get("start_time") or "now",
+        priority="high" if meta.get("high_prio") else "normal",
     ))
 
 
@@ -67,13 +104,17 @@ async def _finish(job_id: str) -> None:
     job_dir = RUNS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     log = job_dir / "log.txt"
+    meta = _read_meta(job_dir) or {}
     log.write_text("")
+    with log.open("a") as f:
+        for line in _banner(meta):
+            f.write(line + "\n")
     for delay, line in LOG_SCHEDULE:
         if delay:
             await asyncio.sleep(delay)
         with log.open("a") as f:
             f.write(line + "\n")
-    _render_results(job_id, job_dir / "results.rst")
+    _render_results(job_id, job_dir, job_dir / "results.rst")
 
 
 def _job_status(job_dir: Path) -> tuple[str, float]:
@@ -90,17 +131,47 @@ def _job_status(job_dir: Path) -> tuple[str, float]:
 async def submit_ansys_run(
     input_file: FilePath,
     version: str = "2025r1",
+    job_name: str | None = None,
+    output_file: str | None = None,
+    np: int = 4,
+    product: Product = "ansys",
+    start_time: str | None = None,
+    high_prio: bool = False,
 ) -> dict:
     """Submits run to HPC. Returns immediately; log and results become
-    available at the returned URIs after ~30s. Resources expire after 1h."""
+    available at the returned URIs after ~30s. Resources expire after 1h.
+
+    Mirrors GKN's `qansys` flags: -i (input_file), -j (job_name),
+    -o (output_file), --np, -p (product), -a (start_time, MMDDhhmm),
+    --highprio. -a is recorded but does not actually delay the run."""
+    if start_time is not None and not START_TIME_RE.match(start_time):
+        raise ValueError(
+            f"start_time must be MMDDhhmm (8 digits), got {start_time!r}"
+        )
+
     job_id = uuid.uuid4().hex[:8]
-    (RUNS_DIR / job_id).mkdir(parents=True, exist_ok=True)
+    job_dir = RUNS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = {
+        "job_id": job_id,
+        "job_name": job_name or Path(input_file).stem,
+        "input_file": str(input_file),
+        "output_file": output_file,
+        "version": version,
+        "np": np,
+        "product": product,
+        "start_time": start_time,
+        "high_prio": high_prio,
+        "submitted_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    _write_meta(job_dir, meta)
     asyncio.create_task(_finish(job_id))
     return {
         "status": "submitted",
-        "job_id": job_id,
         "log_uri": f"ansys://{job_id}/log",
         "results_uri": f"ansys://{job_id}/results",
+        **meta,
     }
 
 
@@ -119,10 +190,14 @@ def list_jobs() -> list[dict]:
         if not job_dir.is_dir():
             continue
         st, age = _job_status(job_dir)
+        meta = _read_meta(job_dir) or {}
         jobs.append({
             "job_id": job_dir.name,
+            "job_name": meta.get("job_name"),
             "status": st,
             "age_seconds": round(age, 1),
+            "np": meta.get("np"),
+            "product": meta.get("product"),
             "log_uri": f"ansys://{job_dir.name}/log",
             "results_uri": f"ansys://{job_dir.name}/results",
         })

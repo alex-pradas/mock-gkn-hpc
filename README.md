@@ -26,3 +26,20 @@ Or wire it into your MCP client config:
 ```
 
 Job artifacts default to a system tempdir (`gettempdir()/mock-gkn-hpc`). Override with `--runs-dir /custom/path` or the `MOCK_GKN_HPC_RUNS_DIR` env var.
+
+## Tool surface
+
+`submit_ansys_run` mirrors GKN's `qansys` wrapper:
+
+| Param | qansys flag | Default | Notes |
+|---|---|---|---|
+| `input_file` | `-i` | *(required)* | Path to `.ans` / `.cdb` |
+| `version` | wrapper version | `"2025r1"` | Picks the `qansysX` release |
+| `job_name` | `-j` | input filename stem | Descriptive only — storage uses a UUID |
+| `output_file` | `-o` | auto | Recorded but not enacted by the mock |
+| `np` | `--np` | `4` | Cosmetic; doesn't scale runtime |
+| `product` | `-p` | `"ansys"` | One of `"ansys"`, `"meba"`, `"mechs"` |
+| `start_time` | `-a` | `None` | `MMDDhhmm`; recorded but doesn't delay |
+| `high_prio` | `--highprio` | `False` | Cosmetic |
+
+All parameters round-trip through `meta.json`, the log banner, and the rendered `results.rst`.

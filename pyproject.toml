@@ -1,6 +1,6 @@
 [project]
 name = "mock-gkn-hpc"
-version = "0.3.0"
+version = "0.4.0"
 description = "Public MCP mock of GKN's internal HPC server for Ansys/FEA analysis"
 readme = "README.md"
 requires-python = ">=3.14"
