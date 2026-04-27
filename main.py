@@ -1,27 +1,159 @@
-from fastmcp import FastMCP
-from pydantic import Field, FilePath
+import asyncio
+import shutil
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
 
-mcp= FastMCP(
+from fastmcp import FastMCP
+from pydantic import FilePath
+
+mcp = FastMCP(
     "HPC at GKN, external demo",
-    instructions="Simulates the HPC for Finite Elements analyisis at GKN"
-    )
+    instructions="Simulates the HPC for Finite Elements analyisis at GKN",
+)
+
+RUNS_DIR = Path(__file__).parent / "runs"
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+JOB_TTL_SECONDS = 3600
+MOCK_RUN_SECONDS = 30
+
+# (sleep_before_writing_seconds, line). Sleeps sum to MOCK_RUN_SECONDS.
+LOG_SCHEDULE: list[tuple[float, str]] = [
+    (0.0, "ANSYS Mechanical 2025R1 starting..."),
+    (0.2, "License: ANSYS Mechanical Enterprise -- checked out"),
+    (0.3, "Reading input file: model.cdb"),
+    (0.5, "Mesh statistics: 12847 nodes, 8432 elements, 38541 dofs"),
+    (0.5, "Material: Structural Steel (E=200 GPa, nu=0.30)"),
+    (0.5, "Boundary conditions: 1 fixed support, 2 force loads"),
+    (0.5, ""),
+    (0.0, "--- SOLUTION ---"),
+    (0.5, "Solver: Sparse Direct"),
+    (0.5, "Reordering equations (METIS)..."),
+    (1.0, "Equation reordering complete; matrix non-zeros = 1.84M, factor non-zeros = 8.2M"),
+    (1.0, "Symbolic factorization..."),
+    (2.0, "Numeric factorization (LDL^T)..."),
+    (5.0, "Factor complete; peak memory = 412 MB"),
+    (2.0, "Forward/back substitution..."),
+    (4.0, "Solver complete; max residual = 4.21e-09"),
+    (2.0, "*** LOAD STEP 1 SUBSTEP 1 COMPLETED. CUM ITER = 1 ***"),
+    (2.0, ""),
+    (0.0, "--- POSTPROCESSING ---"),
+    (1.0, "Computing element results..."),
+    (2.0, "Max von Mises stress: 187.4 MPa @ node 4521"),
+    (1.0, "Max displacement: 0.842 mm @ node 9183"),
+    (1.0, "Reaction force at fixed support: (-2104.3, 8.2, -45.1) N"),
+    (1.0, "Writing results database..."),
+    (1.5, "Wrote results.rst"),
+    (0.5, "Solution complete. CPU time: 28.7s, elapsed: 30.1s"),
+]
+
+
+def _render_results(job_id: str, dst: Path) -> None:
+    tmpl = (TEMPLATES_DIR / "results.rst.tmpl").read_text()
+    now = datetime.now()
+    dst.write_text(tmpl.format(
+        run_date=now.strftime("%Y-%m-%d"),
+        run_time=now.strftime("%H:%M:%S"),
+        job_id=job_id,
+    ))
+
+
+async def _finish(job_id: str) -> None:
+    job_dir = RUNS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    log = job_dir / "log.txt"
+    log.write_text("")
+    for delay, line in LOG_SCHEDULE:
+        if delay:
+            await asyncio.sleep(delay)
+        with log.open("a") as f:
+            f.write(line + "\n")
+    _render_results(job_id, job_dir / "results.rst")
+
+
+def _job_status(job_dir: Path) -> tuple[str, float]:
+    results = job_dir / "results.rst"
+    if not results.exists():
+        return "pending", time.time() - job_dir.stat().st_mtime
+    age = time.time() - results.stat().st_mtime
+    if age > JOB_TTL_SECONDS:
+        return "expired", age
+    return "ready", age
 
 
 @mcp.tool
-def submit_ansys_run(
+async def submit_ansys_run(
     input_file: FilePath,
     version: str = "2025r1",
-) -> str:
-    """Submits run to HPC
-    
-    Returns success or failure.
-    """
+) -> dict:
+    """Submits run to HPC. Returns immediately; log and results become
+    available at the returned URIs after ~30s. Resources expire after 1h."""
+    job_id = uuid.uuid4().hex[:8]
+    (RUNS_DIR / job_id).mkdir(parents=True, exist_ok=True)
+    asyncio.create_task(_finish(job_id))
+    return {
+        "status": "submitted",
+        "job_id": job_id,
+        "log_uri": f"ansys://{job_id}/log",
+        "results_uri": f"ansys://{job_id}/results",
+    }
 
-    return f"File {input_file} submitted to {version}." 
 
 @mcp.tool
-def status():
+def status() -> str:
     return "online"
+
+
+@mcp.tool
+def list_jobs() -> list[dict]:
+    """Lists every submitted job with its current status (pending/ready/expired) and age in seconds."""
+    if not RUNS_DIR.exists():
+        return []
+    jobs = []
+    for job_dir in sorted(RUNS_DIR.iterdir()):
+        if not job_dir.is_dir():
+            continue
+        st, age = _job_status(job_dir)
+        jobs.append({
+            "job_id": job_dir.name,
+            "status": st,
+            "age_seconds": round(age, 1),
+            "log_uri": f"ansys://{job_dir.name}/log",
+            "results_uri": f"ansys://{job_dir.name}/results",
+        })
+    return jobs
+
+
+@mcp.tool
+def delete_results() -> dict:
+    """Deletes every job's log and results files."""
+    if not RUNS_DIR.exists():
+        return {"deleted": 0}
+    count = sum(1 for p in RUNS_DIR.iterdir() if p.is_dir())
+    shutil.rmtree(RUNS_DIR)
+    return {"deleted": count}
+
+
+def _read_artifact(job_id: str, name: str) -> str:
+    path = RUNS_DIR / job_id / name
+    if not path.exists():
+        raise ValueError(f"Job {job_id} {name}: not found or still running.")
+    if time.time() - path.stat().st_mtime > JOB_TTL_SECONDS:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"Job {job_id} {name}: expired.")
+    return path.read_text()
+
+
+@mcp.resource("ansys://{job_id}/log")
+def ansys_log(job_id: str) -> str:
+    return _read_artifact(job_id, "log.txt")
+
+
+@mcp.resource("ansys://{job_id}/results")
+def ansys_results(job_id: str) -> str:
+    return _read_artifact(job_id, "results.rst")
+
 
 if __name__ == "__main__":
     mcp.run()

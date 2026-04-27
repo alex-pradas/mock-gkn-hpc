@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Mock HPC job artifacts
+runs/
