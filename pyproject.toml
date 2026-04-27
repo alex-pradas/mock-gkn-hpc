@@ -1,9 +1,33 @@
 [project]
 name = "mock-gkn-hpc"
-version = "0.2.0"
-description = "Add your description here"
+version = "0.3.0"
+description = "Public MCP mock of GKN's internal HPC server for Ansys/FEA analysis"
 readme = "README.md"
 requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Alejandro Pradas Gómez", email = "alex@pradas.eu" }]
+keywords = ["mcp", "ansys", "fea", "hpc", "fastmcp", "gkn"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "fastmcp>=3.2.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/alex-pradas/mock-gkn-hpc"
+Repository = "https://github.com/alex-pradas/mock-gkn-hpc"
+
+[project.scripts]
+mock-gkn-hpc = "mock_gkn_hpc.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mock_gkn_hpc"]

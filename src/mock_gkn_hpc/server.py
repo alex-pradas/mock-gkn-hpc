@@ -1,5 +1,8 @@
+import argparse
 import asyncio
+import os
 import shutil
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -13,7 +16,8 @@ mcp = FastMCP(
     instructions="Simulates the HPC for Finite Elements analyisis at GKN",
 )
 
-RUNS_DIR = Path(__file__).parent / "runs"
+DEFAULT_RUNS_DIR = Path(tempfile.gettempdir()) / "mock-gkn-hpc"
+RUNS_DIR = DEFAULT_RUNS_DIR
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 JOB_TTL_SECONDS = 3600
 MOCK_RUN_SECONDS = 30
@@ -155,5 +159,28 @@ def ansys_results(job_id: str) -> str:
     return _read_artifact(job_id, "results.rst")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Public MCP mock of GKN's HPC for Ansys/FEA analysis"
+    )
+    parser.add_argument(
+        "--runs-dir",
+        type=Path,
+        default=None,
+        help=f"Where to store job artifacts (default: {DEFAULT_RUNS_DIR})",
+    )
+    args = parser.parse_args()
+
+    runs = args.runs_dir
+    if runs is None:
+        env = os.environ.get("MOCK_GKN_HPC_RUNS_DIR")
+        runs = Path(env) if env else DEFAULT_RUNS_DIR
+
+    global RUNS_DIR
+    RUNS_DIR = runs
+
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

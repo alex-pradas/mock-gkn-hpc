@@ -3,7 +3,7 @@
     "mock-gkn-hpc": {
       "type": "stdio",
       "command": "uv",
-      "args": ["run", "--directory", ".", "main.py"]
+      "args": ["run", "mock-gkn-hpc"]
     }
   }
 }
