@@ -2,10 +2,17 @@
 # A job can read these plus its own staged directory. Override with MOCK_GKN_HPC_CLUSTER_FILES.
 #
 # TRS project tree used by the DUCTILE runscript: global model, materials, thermal map and the
-# load file read by the previous analysis as issued.
+# load files read by the previous analysis as issued (its 8 retained OEM load cases).
 /project/MBE/projects/open-trs/engineering_definition/01_inputs/3d_model/ansys.inp
 /project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat1_linear.mat-SI
 /project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat2_linear.mat-SI
 /project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat3_linear.mat-SI
 /project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/thermal.inp
-/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/Limit_1.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_35.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_62.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_63.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_66.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_84.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_92.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_93.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/limit_load_98.inp

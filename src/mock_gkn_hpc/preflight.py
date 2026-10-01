@@ -425,8 +425,11 @@ def check_deck(deck_path: Path, cluster_files: set[str] | None = None) -> DeckCh
 def _exists(path: str, staged: Path, cluster_files: set[str]) -> bool:
     if path.startswith(CLUSTER_ROOT):
         return str(PurePosixPath(path)) in cluster_files
-    local = Path(path) if Path(path).is_absolute() else staged / path
-    local = local.resolve()
+    if PurePosixPath(path).is_absolute():
+        # An absolute path outside /project names a file on the submitting machine; the job runs
+        # on a cluster node with a copy of the staged directory, not that machine's file system
+        return False
+    local = (staged / path).resolve()
     # Only the staged directory travels with the job
     return local.is_relative_to(staged) and local.is_file()
 
@@ -448,4 +451,6 @@ def format_errors(check: DeckCheck, staged: Path) -> str:
         f" The job sees its staged directory ({staged}) and the cluster /project storage only.",
         " Relative paths are resolved against the staged directory.",
     ]
+    if any(PurePosixPath(r.path).is_absolute() and not r.path.startswith(CLUSTER_ROOT) for r in check.missing):
+        lines.append(" Absolute paths outside /project refer to the submitting machine, which the job cannot see.")
     return "\n".join(lines)

@@ -61,13 +61,14 @@ Jobs are stateless: a job's status, log and results follow from its submit time 
 ~30 s, then ready, expired 1 h later), so they need no running process and survive a server
 restart (e.g. when a client session ends and a new one starts).
 
-## Input pre-flight check (v0.6.0)
+## Input pre-flight check (v0.6.1)
 
 A real solve stops at the first `/INPUT` or `CDREAD` whose file it cannot read. The mock has no
 solver, so `submit_ansys_run` walks the runscript at submission (parameters, arrays, `*DO`
 loops, macros and `%...%` substitution) and checks every file the deck would read. A job sees:
 
-- its **staged directory**, the input file's folder (relative paths resolve against it), and
+- its **staged directory**, the input file's folder (relative paths resolve against it; an
+  absolute path to the submitting machine is not visible to the job, even inside that folder), and
 - the cluster's shared **`/project` storage**, described by `src/mock_gkn_hpc/cluster_files.txt`
   (override with the `MOCK_GKN_HPC_CLUSTER_FILES` env var, one absolute path per line).
 

@@ -144,3 +144,12 @@ def test_long_scalar_string_is_cut_to_32_characters(tmp_path):
     check = check_deck(_stage(tmp_path, deck), CLUSTER)
     assert check.notes and "32 characters" in check.notes[0][1]
     assert check.files[0].path.startswith("limit_loads/../limit_loads/../li")
+
+
+def test_absolute_path_inside_staged_dir_fails(tmp_path):
+    """An absolute workstation path fails even if it points into the staged folder: the job runs
+    on a cluster node with a copy of that folder."""
+    staged = tmp_path / "job"
+    staged.mkdir()
+    check = check_deck(_stage(staged, DECK.format(path_load=str(staged / "limit_loads"))), CLUSTER)
+    assert len(check.missing) == 3
