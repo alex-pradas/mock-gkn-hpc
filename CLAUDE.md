@@ -8,13 +8,14 @@ A FastMCP server that **mocks** GKN's HPC for Ansys / Finite Element analysis. I
 
 ## Architecture
 
-Packaged distribution under `src/mock_gkn_hpc/`. Single module `server.py` (~190 lines of FastMCP). The model is intentionally tiny:
+Packaged distribution under `src/mock_gkn_hpc/`: `server.py` (FastMCP tools/resources) and `preflight.py` (runscript input check). The model is intentionally tiny:
 
 - **Filesystem is the state store.** No in-memory registry. `RUNS_DIR/<job_id>/` exists ⇒ job submitted; `results.rst` present ⇒ ready; older than `JOB_TTL_SECONDS` ⇒ expired. `_job_status()` derives status from directory + `results.rst` mtime — `log.txt` is *not* a readiness sentinel because it's created at submit time and grown during the run. `meta.json` (written at submit) holds the full parameter set; `_read_meta()` is called by `list_jobs`, `_finish` (for the log banner), and `_render_results` (for the .rst parameter section).
 - **`RUNS_DIR` defaults to `gettempdir()/mock-gkn-hpc`.** Overridable via `--runs-dir` CLI flag or `MOCK_GKN_HPC_RUNS_DIR` env var. Set in `main()` before `mcp.run()` — the module-level `RUNS_DIR` is reassigned, so all tools/resources see the override.
 - **Async submit, streaming log, terminal results.** `submit_ansys_run` returns immediately with a `job_id` and two `ansys://...` URIs. A background `asyncio.create_task(_finish(job_id))` walks `LOG_SCHEDULE` (a list of `(sleep, line)` tuples summing to `MOCK_RUN_SECONDS = 30s`) appending each line to `log.txt`, then renders `results.rst` from `src/mock_gkn_hpc/templates/results.rst.tmpl` with current date/time/job_id substituted in.
 - **Resources are templated**: `ansys://{job_id}/log` and `ansys://{job_id}/results`. The log resource serves whatever has been written so far — clients can poll it to watch progress mid-run. The results resource 404s ("not found or still running") until `_finish` writes it at t≈30s. Both self-delete + 404 when past TTL.
 - **`age_seconds` in `list_jobs` is intentionally inconsistent**: time-since-submit while pending (dir mtime), time-since-completion once ready (`results.rst` mtime). Not a bug — derives from the dir-vs-file state model.
+- **Input pre-flight (`preflight.py`).** Before scheduling `_finish`, `submit_ansys_run` runs `check_deck()`: a small APDL walker (string/numeric parameters, comma-list arrays, `*DO` loops, `*CREATE` macros with `%argN%`, `%...%` substitution, `STRCAT`) that records every `/INPUT`/`CDREAD` file. Files must exist in the staged directory (input file's folder) or in the cluster file list (`cluster_files.txt`, `/project/...` paths; override with `MOCK_GKN_HPC_CLUSTER_FILES`). On a miss the job gets `error.txt` + an error log, `_job_status` reports `failed`, and the tool raises `ToolError` so the client sees the Ansys-style message. Unevaluable statements are skipped, never failed.
 - `submit_ansys_run` mirrors GKN's `qansys` flags (`-i`, `-j`, `-o`, `--np`, `-p`, `-a`, `--highprio`). All are recorded in `meta.json` and surfaced in the log banner / results, but **none actually affect simulation behavior** — `-a` (start_time) is format-validated but doesn't delay the run; `--np` doesn't scale `MOCK_RUN_SECONDS`; `-p` is a `Literal["ansys", "meba", "mechs"]` enforced by Pydantic. The schema exists for client realism, not enacted semantics.
 
 The `templates/` directory ships *inside* the wheel (`hatchling` includes everything under `src/mock_gkn_hpc/`), so `Path(__file__).parent / "templates"` resolves identically in editable and installed mode.
@@ -35,7 +36,7 @@ uv build                                     # produce wheel + sdist in dist/
 uvx --from ./dist/mock_gkn_hpc-*.whl mock-gkn-hpc --help   # smoke-test the built wheel
 ```
 
-No tests, no linter configured.
+Tests: `uv run --with pytest pytest -q tests` (pre-flight check). No linter configured.
 
 ## Release process
 

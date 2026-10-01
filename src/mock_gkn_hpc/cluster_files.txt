@@ -1,0 +1,11 @@
+# Files on the mock cluster's shared /project storage (one absolute path per line).
+# A job can read these plus its own staged directory. Override with MOCK_GKN_HPC_CLUSTER_FILES.
+#
+# TRS project tree used by the DUCTILE runscript: global model, materials, thermal map and the
+# load file read by the previous analysis as issued.
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/3d_model/ansys.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat1_linear.mat-SI
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat2_linear.mat-SI
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/material/mat3_linear.mat-SI
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/thermal.inp
+/project/MBE/projects/open-trs/engineering_definition/01_inputs/loads/Limit_1.inp

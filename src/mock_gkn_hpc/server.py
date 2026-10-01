@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Literal
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import FilePath
+
+from .preflight import check_deck, format_errors
 
 mcp = FastMCP(
     "HPC at GKN, external demo",
@@ -25,6 +28,7 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 JOB_TTL_SECONDS = 3600
 MOCK_RUN_SECONDS = 30
 META_FILENAME = "meta.json"
+ERROR_FILENAME = "error.txt"
 START_TIME_RE = re.compile(r"^\d{8}$")  # MMDDhhmm
 
 Product = Literal["ansys", "meba", "mechs"]
@@ -118,6 +122,8 @@ async def _finish(job_id: str) -> None:
 
 
 def _job_status(job_dir: Path) -> tuple[str, float]:
+    if (job_dir / ERROR_FILENAME).exists():
+        return "failed", time.time() - job_dir.stat().st_mtime
     results = job_dir / "results.rst"
     if not results.exists():
         return "pending", time.time() - job_dir.stat().st_mtime
@@ -143,7 +149,12 @@ async def submit_ansys_run(
 
     Mirrors GKN's `qansys` flags: -i (input_file), -j (job_name),
     -o (output_file), --np, -p (product), -a (start_time, MMDDhhmm),
-    --highprio. -a is recorded but does not actually delay the run."""
+    --highprio. -a is recorded but does not actually delay the run.
+
+    The job sees the input file's directory (staged with the job) and the
+    cluster /project storage. If the deck reads a file (/INPUT, CDREAD) that
+    neither contains, the job fails at input processing and this tool
+    returns the solver error."""
     if start_time is not None and not START_TIME_RE.match(start_time):
         raise ValueError(
             f"start_time must be MMDDhhmm (8 digits), got {start_time!r}"
@@ -166,11 +177,27 @@ async def submit_ansys_run(
         "submitted_at": datetime.now().isoformat(timespec="seconds"),
     }
     _write_meta(job_dir, meta)
+
+    # A real solve stops at the first file it cannot read. The mock has no solver, so it checks
+    # the deck up front and returns the failure to the submitter, who can fix it and resubmit.
+    deck = Path(input_file).resolve()
+    check = check_deck(deck)
+    if not check.ok:
+        errors = format_errors(check, deck.parent)
+        log = "\n".join(_banner(meta)) + "\nReading input file: " + deck.name + "\n" + errors + "\n"
+        (job_dir / "log.txt").write_text(log)
+        (job_dir / ERROR_FILENAME).write_text(errors)
+        raise ToolError(
+            f"Job {job_id} ({meta['job_name']}) failed during input processing: "
+            f"{len(check.missing)} file(s) read by the deck do not exist.\n{errors}"
+        )
+
     asyncio.create_task(_finish(job_id))
     return {
         "status": "submitted",
         "log_uri": f"ansys://{job_id}/log",
         "results_uri": f"ansys://{job_id}/results",
+        "input_files_checked": len({ref.path for ref in check.files}),
         **meta,
     }
 
@@ -182,7 +209,7 @@ def status() -> str:
 
 @mcp.tool
 def list_jobs() -> list[dict]:
-    """Lists every submitted job with its current status (pending/ready/expired) and age in seconds."""
+    """Lists every submitted job with its current status (pending/ready/failed/expired) and age in seconds."""
     if not RUNS_DIR.exists():
         return []
     jobs = []

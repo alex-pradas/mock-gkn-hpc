@@ -43,3 +43,30 @@ Job artifacts default to a system tempdir (`gettempdir()/mock-gkn-hpc`). Overrid
 | `high_prio` | `--highprio` | `False` | Cosmetic |
 
 All parameters round-trip through `meta.json`, the log banner, and the rendered `results.rst`.
+
+## Input pre-flight check (v0.5.0)
+
+A real solve stops at the first `/INPUT` or `CDREAD` whose file it cannot read. The mock has no
+solver, so `submit_ansys_run` walks the runscript at submission (parameters, arrays, `*DO`
+loops, macros and `%...%` substitution) and checks every file the deck would read. A job sees:
+
+- its **staged directory**, the input file's folder (relative paths resolve against it), and
+- the cluster's shared **`/project` storage**, described by `src/mock_gkn_hpc/cluster_files.txt`
+  (override with the `MOCK_GKN_HPC_CLUSTER_FILES` env var, one absolute path per line).
+
+If any file is missing, the job is recorded as `failed` (its log holds the error) and the tool
+returns an MCP error with Ansys-style messages, e.g.
+
+```
+Job e816a8ac (runscript) failed during input processing: 6 file(s) read by the deck do not exist.
+ *** ERROR ***
+ /INPUT failed (runscript line 139). File /project/.../01_inputs/loads/limit_load_2.inp does not exist.
+```
+
+so an agent sees the failure in its context and can fix the deck and resubmit. A successful
+submission reports `input_files_checked`. Statements the walker cannot evaluate are skipped,
+not failed.
+
+Each client can keep its own job store with `--runs-dir` (useful when several agents run in
+parallel and should not see each other's jobs in `list_jobs`).
+
