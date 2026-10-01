@@ -187,9 +187,14 @@ async def submit_ansys_run(
         log = "\n".join(_banner(meta)) + "\nReading input file: " + deck.name + "\n" + errors + "\n"
         (job_dir / "log.txt").write_text(log)
         (job_dir / ERROR_FILENAME).write_text(errors)
+        problems = []
+        if check.errors:
+            problems.append(f"{len(check.errors)} deck error(s)")
+        if check.missing:
+            problems.append(f"{len(check.missing)} file(s) read by the deck do not exist")
         raise ToolError(
             f"Job {job_id} ({meta['job_name']}) failed during input processing: "
-            f"{len(check.missing)} file(s) read by the deck do not exist.\n{errors}"
+            f"{'; '.join(problems)}.\n{errors}"
         )
 
     asyncio.create_task(_finish(job_id))
@@ -198,6 +203,7 @@ async def submit_ansys_run(
         "log_uri": f"ansys://{job_id}/log",
         "results_uri": f"ansys://{job_id}/results",
         "input_files_checked": len({ref.path for ref in check.files}),
+        **({"notes": [f"line {line}: {msg}" for line, msg in check.notes]} if check.notes else {}),
         **meta,
     }
 
