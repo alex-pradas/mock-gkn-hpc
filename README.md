@@ -49,9 +49,13 @@ Other tools and resources:
 | Name | What it does |
 |---|---|
 | `job_status(job_id, wait_s=0)` | Status of one job (pending/ready/failed/expired); with `wait_s`, waits up to that many seconds (max 120) for a pending job to finish |
+| `get_job_log(job_id)`, `get_job_results(job_id)` | The log so far and, once ready, the results file (for clients that cannot read MCP resources) |
 | `list_jobs()` | Every job with its status and age |
 | `delete_results(job_id)` | Deletes one job's log, results and metadata |
 | `ansys://{job_id}/log`, `/results`, `/meta` | The job's log (as written so far), results file and `meta.json` |
+
+The log is built from the job: the requested version and product, every file the deck reads,
+and one `LOAD STEP` line per `SOLVE` the deck executes, with its load file.
 
 Jobs are stateless: a job's status, log and results follow from its submit time (pending for
 ~30 s, then ready, expired 1 h later), so they need no running process and survive a server
@@ -68,7 +72,7 @@ loops, macros and `%...%` substitution) and checks every file the deck would rea
   (override with the `MOCK_GKN_HPC_CLUSTER_FILES` env var, one absolute path per line).
 
 If any file is missing, the job is recorded as `failed` (its log holds the error) and the tool
-returns an MCP error with Ansys-style messages, e.g.
+returns `status: "failed"` with Ansys-style messages (a normal result, not an MCP error), e.g.
 
 ```
 Job e816a8ac (runscript) failed during input processing: 6 file(s) read by the deck do not exist.

@@ -62,6 +62,8 @@ class DeckCheck:
     errors: list[tuple[int, str]] = field(default_factory=list)
     # Things worth telling the user without failing the job, as (line, message)
     notes: list[tuple[int, str]] = field(default_factory=list)
+    # SOLVE commands in execution order, with the last /INPUT file read before each
+    solves: list[tuple[int, str | None]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -108,6 +110,7 @@ class _Deck:
         self.params: dict[str, _Param] = {}
         self.macros: dict[str, list[tuple[int, str]]] = {}
         self.refs: list[FileRef] = []
+        self.solves: list[tuple[int, str | None]] = []
         self.errors: list[tuple[int, str]] = []
         self.notes: list[tuple[int, str]] = []
         self.lineno = 0
@@ -232,6 +235,9 @@ class _Deck:
         try:
             if head == "/input":
                 self.file_ref(lineno, "/INPUT", fields[1:4], args)
+            elif head == "solve":
+                last = next((r.path for r in reversed(self.refs) if r.command == "/INPUT"), None)
+                self.solves.append((lineno, last))
             elif head == "cdread":
                 self.file_ref(lineno, "CDREAD", fields[2:5], args)
             elif head == "*dim":
@@ -405,7 +411,7 @@ def check_deck(deck_path: Path, cluster_files: set[str] | None = None) -> DeckCh
     deck = _Deck(deck_path.read_text(errors="replace").splitlines())
     deck.run()
 
-    result = DeckCheck(files=deck.refs, errors=deck.errors, notes=deck.notes)
+    result = DeckCheck(files=deck.refs, errors=deck.errors, notes=deck.notes, solves=deck.solves)
     seen: set[str] = set()
     for ref in deck.refs:
         if ref.path in seen:

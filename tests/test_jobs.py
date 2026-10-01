@@ -77,3 +77,61 @@ def test_delete_results_is_per_job(hpc):
     assert remaining == {b["job_id"]}
     with pytest.raises(ToolError):
         server.delete_results("nonexistent")
+
+
+SOLVING_DECK = """\
+*dim,lc_id,array,3
+lc_id(1)=2,20,34
+*do,i,1,3
+    /input,limit_load_%lc_id(i)%,inp,limit_loads
+    solve
+*enddo
+"""
+
+
+def _stage_loads(deck: Path, text: str) -> None:
+    loads = deck.parent / "limit_loads"
+    loads.mkdir(exist_ok=True)
+    for case in (2, 20, 34):
+        (loads / f"limit_load_{case}.inp").write_text("/com\n")
+    deck.write_text(text)
+
+
+def test_log_and_results_follow_the_deck(hpc):
+    clock, deck = hpc
+    _stage_loads(deck, SOLVING_DECK)
+    job = _submit(deck)
+    clock.t += server.MOCK_RUN_SECONDS + 1
+    log = server.get_job_log(job["job_id"])["log"]
+    assert "ANSYS Mechanical 2024R1 starting" in log
+    assert "License: product 'meba' checked out" in log
+    steps = [line for line in log.splitlines() if "LOAD STEP" in line]
+    assert len(steps) == 3 and "limit_load_34.inp" in steps[-1]
+    assert "Solution complete. 3 load step(s) solved." in log
+    results = server.get_job_results(job["job_id"])["results"]
+    assert "Load steps:           3" in results and "Version:   2024r1" in results
+
+
+def test_results_not_ready_is_a_normal_answer(hpc):
+    clock, deck = hpc
+    job = _submit(deck)
+    answer = server.get_job_results(job["job_id"])
+    assert answer["status"] == "pending" and answer["results"] is None
+
+
+def test_failed_job_is_a_normal_result(hpc):
+    clock, deck = hpc
+    deck.write_text("/input,limit_load_2,inp,limit_loads\nsolve\n")  # file not staged
+    job = _submit(deck)
+    assert job["status"] == "failed"
+    assert "limit_load_2.inp does not exist" in job["errors"]
+    assert server.list_jobs()[0]["status"] == "failed"
+    assert "does not exist" in server.get_job_log(job["job_id"])["log"]
+
+
+def test_no_solve_is_flagged_in_the_log(hpc):
+    clock, deck = hpc
+    _stage_loads(deck, "/input,limit_load_2,inp,limit_loads\n")
+    job = _submit(deck)
+    clock.t += server.MOCK_RUN_SECONDS + 1
+    assert "No SOLVE command was executed" in server.get_job_log(job["job_id"])["log"]

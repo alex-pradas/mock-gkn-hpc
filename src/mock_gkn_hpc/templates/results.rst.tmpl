@@ -4,6 +4,7 @@ Run date:  {run_date}
 Run time:  {run_time}
 Job ID:    {job_id}
 Solver:    Sparse Direct
+Version:   {version}
 Analysis:  Linear Static
 
 Run parameters
@@ -20,8 +21,8 @@ Summary
 Nodes:                12847
 Elements:             8432
 DOF:                  38541
-Load steps:           1
-Substeps:             1
+Load steps:           {load_steps}
+Substeps:             {load_steps}
 
 Maximum results
 ---------------
@@ -31,7 +32,7 @@ Reaction force:       (-2104.3, 8.2, -45.1) N
 
 Solver
 ------
-Iterations:           1
+Iterations:           {load_steps}
 Final residual:       4.21e-09
 CPU time:             28.7 s
 Elapsed time:         30.1 s

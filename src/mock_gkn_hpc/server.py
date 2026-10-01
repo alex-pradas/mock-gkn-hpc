@@ -34,38 +34,8 @@ START_TIME_RE = re.compile(r"^\d{8}$")  # MMDDhhmm
 
 Product = Literal["ansys", "meba", "mechs"]
 
-# (sleep_before_writing_seconds, line). Sleeps sum to MOCK_RUN_SECONDS.
-LOG_SCHEDULE: list[tuple[float, str]] = [
-    (0.0, "ANSYS Mechanical 2025R1 starting..."),
-    (0.2, "License: ANSYS Mechanical Enterprise -- checked out"),
-    (0.3, "Reading input file: model.cdb"),
-    (0.5, "Mesh statistics: 12847 nodes, 8432 elements, 38541 dofs"),
-    (0.5, "Material: Structural Steel (E=200 GPa, nu=0.30)"),
-    (0.5, "Boundary conditions: 1 fixed support, 2 force loads"),
-    (0.5, ""),
-    (0.0, "--- SOLUTION ---"),
-    (0.5, "Solver: Sparse Direct"),
-    (0.5, "Reordering equations (METIS)..."),
-    (1.0, "Equation reordering complete; matrix non-zeros = 1.84M, factor non-zeros = 8.2M"),
-    (1.0, "Symbolic factorization..."),
-    (2.0, "Numeric factorization (LDL^T)..."),
-    (5.0, "Factor complete; peak memory = 412 MB"),
-    (2.0, "Forward/back substitution..."),
-    (4.0, "Solver complete; max residual = 4.21e-09"),
-    (2.0, "*** LOAD STEP 1 SUBSTEP 1 COMPLETED. CUM ITER = 1 ***"),
-    (2.0, ""),
-    (0.0, "--- POSTPROCESSING ---"),
-    (1.0, "Computing element results..."),
-    (2.0, "Max von Mises stress: 187.4 MPa @ node 4521"),
-    (1.0, "Max displacement: 0.842 mm @ node 9183"),
-    (1.0, "Reaction force at fixed support: (-2104.3, 8.2, -45.1) N"),
-    (1.0, "Writing results database..."),
-    (1.5, "Wrote results.rst"),
-    (0.5, "Solution complete. CPU time: 28.7s, elapsed: 30.1s"),
-]
-
-
-LOG_SECONDS = sum(delay for delay, _ in LOG_SCHEDULE)
+# Fixed figures of the mock model, shared by the log and results.rst
+MESH_LINE = "Mesh statistics: 12847 nodes, 8432 elements, 38541 dofs"
 
 
 def _write_meta(job_dir: Path, meta: dict) -> None:
@@ -105,6 +75,8 @@ def _render_results(job_id: str, job_dir: Path, dst: Path) -> None:
         product=meta.get("product") or "-",
         start_time=meta.get("start_time") or "now",
         priority="high" if meta.get("high_prio") else "normal",
+        version=meta.get("version") or "-",
+        load_steps=len(meta.get("solves") or [None]),
     ))
 
 
@@ -113,18 +85,41 @@ def _elapsed(meta: dict) -> float:
     return time.time() - float(meta.get("submitted_ts", 0.0))
 
 
+def _timeline(meta: dict) -> list[tuple[float, str]]:
+    """(seconds after submission, line) of the solver log, built from what the deck does: the
+    requested version and product, every file it reads, and one load step per SOLVE."""
+    files = meta.get("files_read") or []
+    solves = meta.get("solves")
+    if solves is None:  # jobs submitted before 0.6.0
+        solves = [{"line": None, "load_file": None}]
+    run = MOCK_RUN_SECONDS
+    out: list[tuple[float, str]] = [
+        (0.0, f"ANSYS Mechanical {str(meta.get('version', '')).upper()} starting..."),
+        (0.02 * run, f"License: product '{meta.get('product')}' checked out"),
+        (0.03 * run, f"Reading input file: {Path(meta.get('input_file', '')).name}"),
+    ]
+    for n, ref in enumerate(files):
+        out.append((0.04 * run + 0.08 * run * n / max(len(files), 1), f"{ref['command']}: {ref['path']}"))
+    out += [(0.13 * run, MESH_LINE), (0.15 * run, "--- SOLUTION ---"), (0.15 * run, "Solver: Sparse Direct")]
+    if not solves:
+        out.append((0.2 * run, " *** WARNING *** No SOLVE command was executed: no load steps solved."))
+    for k, solve in enumerate(solves, 1):
+        t = 0.2 * run + 0.7 * run * k / len(solves)
+        load = f" (load file: {Path(solve['load_file']).name})" if solve.get("load_file") else ""
+        out.append((t, f"*** LOAD STEP {k} SUBSTEP 1 COMPLETED. CUM ITER = {k} ***{load}"))
+    out += [
+        (0.92 * run, "Solver complete; max residual = 4.21e-09"),
+        (0.93 * run, "--- POSTPROCESSING ---"),
+        (0.95 * run, "Writing results database..."),
+        (0.98 * run, "Wrote results.rst"),
+        (run, f"Solution complete. {len(solves)} load step(s) solved."),
+    ]
+    return out
+
+
 def _log_lines(meta: dict, elapsed: float) -> list[str]:
     """The log as written so far, `elapsed` seconds into the run."""
-    lines = list(_banner(meta))
-    if elapsed >= MOCK_RUN_SECONDS:  # finished: the whole log
-        return lines + [line for _, line in LOG_SCHEDULE]
-    t = 0.0
-    for delay, line in LOG_SCHEDULE:
-        t += delay * MOCK_RUN_SECONDS / LOG_SECONDS
-        if t > elapsed:
-            break
-        lines.append(line)
-    return lines
+    return list(_banner(meta)) + [line for t, line in _timeline(meta) if t <= elapsed]
 
 
 def _refresh(job_dir: Path) -> None:
@@ -174,8 +169,8 @@ async def submit_ansys_run(
 
     The job sees the input file's directory (staged with the job) and the
     cluster /project storage. If the deck reads a file (/INPUT, CDREAD) that
-    neither contains, the job fails at input processing and this tool
-    returns the solver error."""
+    neither contains, or the deck has an error, the job fails at input
+    processing and this tool returns status "failed" with the solver errors."""
     if start_time is not None and not START_TIME_RE.match(start_time):
         raise ValueError(
             f"start_time must be MMDDhhmm (8 digits), got {start_time!r}"
@@ -214,11 +209,19 @@ async def submit_ansys_run(
             problems.append(f"{len(check.errors)} deck error(s)")
         if check.missing:
             problems.append(f"{len(check.missing)} file(s) read by the deck do not exist")
-        raise ToolError(
-            f"Job {job_id} ({meta['job_name']}) failed during input processing: "
-            f"{'; '.join(problems)}.\n{errors}"
-        )
+        # A failed job is an outcome, not a broken call: it comes back as a normal result
+        return {
+            "status": "failed",
+            "message": f"Job {job_id} ({meta['job_name']}) failed during input processing: "
+            f"{'; '.join(problems)}.",
+            "errors": errors,
+            "log_uri": f"ansys://{job_id}/log",
+            **meta,
+        }
 
+    meta["files_read"] = [{"command": r.command, "path": r.path} for r in check.files]
+    meta["solves"] = [{"line": line, "load_file": load} for line, load in check.solves]
+    _write_meta(job_dir, meta)
     _refresh(job_dir)
     return {
         "status": "submitted",
@@ -285,6 +288,34 @@ async def job_status(job_id: str, wait_s: float = 0) -> dict:
         "results_uri": f"ansys://{job_id}/results",
         "meta_uri": f"ansys://{job_id}/meta",
     }
+
+
+@mcp.tool
+def get_job_log(job_id: str) -> dict:
+    """The job's solver log as written so far (same content as ansys://{job_id}/log)."""
+    job_dir = RUNS_DIR / job_id
+    if not (job_dir / META_FILENAME).exists():
+        raise ToolError(f"Unknown job {job_id}.")
+    _refresh(job_dir)
+    st, _ = _job_status(job_dir)
+    if st == "expired":
+        return {"job_id": job_id, "status": st, "log": None, "message": "Log expired."}
+    return {"job_id": job_id, "status": st, "log": (job_dir / "log.txt").read_text()}
+
+
+@mcp.tool
+def get_job_results(job_id: str) -> dict:
+    """The job's results file once it is ready (same content as ansys://{job_id}/results)."""
+    job_dir = RUNS_DIR / job_id
+    if not (job_dir / META_FILENAME).exists():
+        raise ToolError(f"Unknown job {job_id}.")
+    _refresh(job_dir)
+    st, _ = _job_status(job_dir)
+    results = job_dir / "results.rst"
+    if st != "ready" or not results.exists():
+        return {"job_id": job_id, "status": st, "results": None,
+                "message": f"No results: the job is {st}."}
+    return {"job_id": job_id, "status": st, "results": results.read_text()}
 
 
 @mcp.tool
