@@ -27,6 +27,7 @@ RUNS_DIR = DEFAULT_RUNS_DIR
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 JOB_TTL_SECONDS = 3600
 MOCK_RUN_SECONDS = 30
+MAX_WAIT_SECONDS = 120  # longest job_status wait
 META_FILENAME = "meta.json"
 ERROR_FILENAME = "error.txt"
 START_TIME_RE = re.compile(r"^\d{8}$")  # MMDDhhmm
@@ -64,6 +65,9 @@ LOG_SCHEDULE: list[tuple[float, str]] = [
 ]
 
 
+LOG_SECONDS = sum(delay for delay, _ in LOG_SCHEDULE)
+
+
 def _write_meta(job_dir: Path, meta: dict) -> None:
     (job_dir / META_FILENAME).write_text(json.dumps(meta, indent=2))
 
@@ -90,7 +94,7 @@ def _banner(meta: dict) -> list[str]:
 def _render_results(job_id: str, job_dir: Path, dst: Path) -> None:
     tmpl = (TEMPLATES_DIR / "results.rst.tmpl").read_text()
     meta = _read_meta(job_dir) or {}
-    now = datetime.now()
+    now = datetime.fromtimestamp(float(meta.get("submitted_ts", time.time())) + MOCK_RUN_SECONDS)
     dst.write_text(tmpl.format(
         run_date=now.strftime("%Y-%m-%d"),
         run_time=now.strftime("%H:%M:%S"),
@@ -104,33 +108,49 @@ def _render_results(job_id: str, job_dir: Path, dst: Path) -> None:
     ))
 
 
-async def _finish(job_id: str) -> None:
-    job_dir = RUNS_DIR / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    log = job_dir / "log.txt"
-    meta = _read_meta(job_dir) or {}
-    log.write_text("")
-    with log.open("a") as f:
-        for line in _banner(meta):
-            f.write(line + "\n")
+def _elapsed(meta: dict) -> float:
+    """Seconds since submission (jobs are stateless: status follows from the submit time)."""
+    return time.time() - float(meta.get("submitted_ts", 0.0))
+
+
+def _log_lines(meta: dict, elapsed: float) -> list[str]:
+    """The log as written so far, `elapsed` seconds into the run."""
+    lines = list(_banner(meta))
+    if elapsed >= MOCK_RUN_SECONDS:  # finished: the whole log
+        return lines + [line for _, line in LOG_SCHEDULE]
+    t = 0.0
     for delay, line in LOG_SCHEDULE:
-        if delay:
-            await asyncio.sleep(delay)
-        with log.open("a") as f:
-            f.write(line + "\n")
-    _render_results(job_id, job_dir, job_dir / "results.rst")
+        t += delay * MOCK_RUN_SECONDS / LOG_SECONDS
+        if t > elapsed:
+            break
+        lines.append(line)
+    return lines
+
+
+def _refresh(job_dir: Path) -> None:
+    """Bring a job's files up to date with its elapsed time. Jobs need no running process, so
+    they survive a server restart: a new server picks up where the old one left off."""
+    meta = _read_meta(job_dir)
+    if meta is None or (job_dir / ERROR_FILENAME).exists():
+        return
+    elapsed = _elapsed(meta)
+    (job_dir / "log.txt").write_text("\n".join(_log_lines(meta, elapsed)) + "\n")
+    results = job_dir / "results.rst"
+    if elapsed >= MOCK_RUN_SECONDS and not results.exists():
+        _render_results(meta["job_id"], job_dir, results)
 
 
 def _job_status(job_dir: Path) -> tuple[str, float]:
+    """(status, age in seconds): pending until MOCK_RUN_SECONDS after submission, then ready;
+    expired JOB_TTL_SECONDS after finishing; failed if the deck was rejected."""
+    meta = _read_meta(job_dir) or {}
+    elapsed = _elapsed(meta) if meta else time.time() - job_dir.stat().st_mtime
     if (job_dir / ERROR_FILENAME).exists():
-        return "failed", time.time() - job_dir.stat().st_mtime
-    results = job_dir / "results.rst"
-    if not results.exists():
-        return "pending", time.time() - job_dir.stat().st_mtime
-    age = time.time() - results.stat().st_mtime
-    if age > JOB_TTL_SECONDS:
-        return "expired", age
-    return "ready", age
+        return "failed", elapsed
+    if elapsed < MOCK_RUN_SECONDS:
+        return "pending", elapsed
+    age = elapsed - MOCK_RUN_SECONDS
+    return ("expired" if age > JOB_TTL_SECONDS else "ready"), age
 
 
 @mcp.tool
@@ -144,8 +164,9 @@ async def submit_ansys_run(
     start_time: str | None = None,
     high_prio: bool = False,
 ) -> dict:
-    """Submits run to HPC. Returns immediately; log and results become
-    available at the returned URIs after ~30s. Resources expire after 1h.
+    """Submits run to HPC. Returns immediately with a job_id; the job runs for
+    ~30s. Wait for it with job_status(job_id, wait_s), then read the log and
+    results at the returned URIs. Resources expire 1h after the job finishes.
 
     Mirrors GKN's `qansys` flags: -i (input_file), -j (job_name),
     -o (output_file), --np, -p (product), -a (start_time, MMDDhhmm),
@@ -175,6 +196,7 @@ async def submit_ansys_run(
         "start_time": start_time,
         "high_prio": high_prio,
         "submitted_at": datetime.now().isoformat(timespec="seconds"),
+        "submitted_ts": time.time(),
     }
     _write_meta(job_dir, meta)
 
@@ -197,7 +219,7 @@ async def submit_ansys_run(
             f"{'; '.join(problems)}.\n{errors}"
         )
 
-    asyncio.create_task(_finish(job_id))
+    _refresh(job_dir)
     return {
         "status": "submitted",
         "log_uri": f"ansys://{job_id}/log",
@@ -222,6 +244,7 @@ def list_jobs() -> list[dict]:
     for job_dir in sorted(RUNS_DIR.iterdir()):
         if not job_dir.is_dir():
             continue
+        _refresh(job_dir)
         st, age = _job_status(job_dir)
         meta = _read_meta(job_dir) or {}
         jobs.append({
@@ -238,21 +261,50 @@ def list_jobs() -> list[dict]:
 
 
 @mcp.tool
-def delete_results() -> dict:
-    """Deletes every job's log and results files."""
-    if not RUNS_DIR.exists():
-        return {"deleted": 0}
-    count = sum(1 for p in RUNS_DIR.iterdir() if p.is_dir())
-    shutil.rmtree(RUNS_DIR)
-    return {"deleted": count}
+async def job_status(job_id: str, wait_s: float = 0) -> dict:
+    """Status of one job (pending/ready/failed/expired). With wait_s > 0, waits up to wait_s
+    seconds (at most 120) for a pending job to finish before answering."""
+    job_dir = RUNS_DIR / job_id
+    if not (job_dir / META_FILENAME).exists():
+        raise ToolError(f"Unknown job {job_id}.")
+    wait = min(max(wait_s, 0), MAX_WAIT_SECONDS)
+    deadline = time.time() + wait
+    for _ in range(int(wait) + 2):  # bounded even if the clock stalls
+        _refresh(job_dir)
+        st, age = _job_status(job_dir)
+        if st != "pending" or time.time() >= deadline:
+            break
+        await asyncio.sleep(min(1.0, max(deadline - time.time(), 0.05)))
+    meta = _read_meta(job_dir) or {}
+    return {
+        "job_id": job_id,
+        "job_name": meta.get("job_name"),
+        "status": st,
+        "age_seconds": round(age, 1),
+        "log_uri": f"ansys://{job_id}/log",
+        "results_uri": f"ansys://{job_id}/results",
+        "meta_uri": f"ansys://{job_id}/meta",
+    }
+
+
+@mcp.tool
+def delete_results(job_id: str) -> dict:
+    """Deletes one job's log, results and metadata. Archive anything you need first."""
+    job_dir = RUNS_DIR / job_id
+    if not job_dir.is_dir():
+        raise ToolError(f"Unknown job {job_id}.")
+    shutil.rmtree(job_dir)
+    return {"deleted": job_id}
 
 
 def _read_artifact(job_id: str, name: str) -> str:
-    path = RUNS_DIR / job_id / name
+    job_dir = RUNS_DIR / job_id
+    if job_dir.is_dir():
+        _refresh(job_dir)
+    path = job_dir / name
     if not path.exists():
         raise ValueError(f"Job {job_id} {name}: not found or still running.")
-    if time.time() - path.stat().st_mtime > JOB_TTL_SECONDS:
-        path.unlink(missing_ok=True)
+    if job_dir.is_dir() and _job_status(job_dir)[0] == "expired":
         raise ValueError(f"Job {job_id} {name}: expired.")
     return path.read_text()
 
@@ -265,6 +317,11 @@ def ansys_log(job_id: str) -> str:
 @mcp.resource("ansys://{job_id}/results")
 def ansys_results(job_id: str) -> str:
     return _read_artifact(job_id, "results.rst")
+
+
+@mcp.resource("ansys://{job_id}/meta")
+def ansys_meta(job_id: str) -> str:
+    return _read_artifact(job_id, META_FILENAME)
 
 
 def main() -> None:

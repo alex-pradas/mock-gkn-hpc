@@ -44,6 +44,19 @@ Job artifacts default to a system tempdir (`gettempdir()/mock-gkn-hpc`). Overrid
 
 All parameters round-trip through `meta.json`, the log banner, and the rendered `results.rst`.
 
+Other tools and resources:
+
+| Name | What it does |
+|---|---|
+| `job_status(job_id, wait_s=0)` | Status of one job (pending/ready/failed/expired); with `wait_s`, waits up to that many seconds (max 120) for a pending job to finish |
+| `list_jobs()` | Every job with its status and age |
+| `delete_results(job_id)` | Deletes one job's log, results and metadata |
+| `ansys://{job_id}/log`, `/results`, `/meta` | The job's log (as written so far), results file and `meta.json` |
+
+Jobs are stateless: a job's status, log and results follow from its submit time (pending for
+~30 s, then ready, expired 1 h later), so they need no running process and survive a server
+restart (e.g. when a client session ends and a new one starts).
+
 ## Input pre-flight check (v0.6.0)
 
 A real solve stops at the first `/INPUT` or `CDREAD` whose file it cannot read. The mock has no
