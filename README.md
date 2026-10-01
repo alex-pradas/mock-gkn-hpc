@@ -44,7 +44,7 @@ Job artifacts default to a system tempdir (`gettempdir()/mock-gkn-hpc`). Overrid
 
 All parameters round-trip through `meta.json`, the log banner, and the rendered `results.rst`.
 
-## Input pre-flight check (v0.5.0)
+## Input pre-flight check (v0.6.0)
 
 A real solve stops at the first `/INPUT` or `CDREAD` whose file it cannot read. The mock has no
 solver, so `submit_ansys_run` walks the runscript at submission (parameters, arrays, `*DO`
@@ -64,8 +64,19 @@ Job e816a8ac (runscript) failed during input processing: 6 file(s) read by the d
 ```
 
 so an agent sees the failure in its context and can fix the deck and resubmit. A successful
-submission reports `input_files_checked`. Statements the walker cannot evaluate are skipped,
-not failed.
+submission reports `input_files_checked` (and `notes`, e.g. a character value cut to 32
+characters).
+
+The walker follows APDL's parameter rules:
+- array parameters must be dimensioned with `*DIM` before values are assigned, unless an
+  implied (colon) loop defines them (`a(1:3)=1,2,3`);
+- `CHAR` array elements hold 8 characters and scalar character parameters 32;
+- in a `STRING` array the first subscript is the **character position** and the next ones
+  select the string: `name(1,j)` is the j-th string. Writing `name(2)='x'` into a one-column
+  STRING array therefore writes from character 2 of the same string.
+
+It also handles `*SET`, `NINT`, `INT`, `ABS`, `CHRVAL` and `STRCAT`. A `/INPUT` or `CDREAD`
+whose file name cannot be resolved with this subset is reported as a deck error, not skipped.
 
 Each client can keep its own job store with `--runs-dir` (useful when several agents run in
 parallel and should not see each other's jobs in `list_jobs`).
